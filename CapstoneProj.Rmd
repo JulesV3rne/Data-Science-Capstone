@@ -1,0 +1,145 @@
+---
+title: "Milestone Report 1 - Building a Predictive Text Model"
+author: "Matthew Kotorlis"
+date: "07/09/2020"
+output: html_document
+---
+
+### Project Overview and Executive Statement
+
+In our
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Loading libraries and downloading datasets
+
+```{r}
+library(tm)
+library(tidyverse)
+library(tau)
+```
+
+```{r}
+if (!file.exists("swiftkey.zip")) {
+    download.file("https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip", destfile = "swiftkey.zip")
+    unzip("swiftkey.zip", exdir = "data") 
+}
+```
+
+### Exploring the data
+
+Because we are executing this in a Linux environment, we have access to bash scripting.
+```{bash}
+echo "    Lines     Words     Bytes"
+wc ./data/final/en_US/en_US.*.txt
+```
+That's a lot of data, let's read in the files and sample 0.5% of the twitter, blog, and news posts. This is computationally expensive so we will save the results to disk.
+
+```{r,warning=FALSE}
+twitfile <- file("data/final/en_US/en_US.twitter.txt")
+newsfile <- file("data/final/en_US/en_US.news.txt")
+blogfile <- file("data/final/en_US/en_US.blogs.txt")
+
+if (!file.exists("data/twitter.rda")) {
+    open(twitfile)
+    twitter <- readLines(twitfile)
+    twitter <- sample(twitter, length(twitter)*0.005)
+    save(twitter, file = "data/twitter.rda")
+} else {
+    load("data/twitter.rda")
+}
+close(twitfile)
+
+if (!file.exists("data/news.rda")) {
+    open(newsfile)
+    news <- readLines(newsfile)
+    news <- sample(news, length(news)*0.005)
+    save(news, file = "data/news.rda")
+} else {
+    load("data/news.rda")
+}
+close(newsfile)
+
+if (!file.exists("data/blogs.rda")) {
+    open(blogfile)
+    blog <- readLines(blogfile)
+    blog <- sample(blog, length(blog)*0.005)
+    save(blog, file = "data/blogs.rda")
+} else {
+    load("data/blogs.rda")
+}
+close(blogfile)
+
+```
+
+
+In order to pre-process these datasets, we must filter out any profanities. Here is a pretty comprehensive list of 451(!) swear words. Originally from Google's API and archived by github user [RobertJGabriel](https://github.com/RobertJGabriel/Google-profanity-words)
+
+```{r}
+if (!file.exists("data/swear.txt")) { download.file("https://raw.githubusercontent.com/RobertJGabriel/Google-profanity-words/master/list.txt", destfile="data/swear.txt") }
+```
+
+Now we can read the file in and concatenate them into a regular expression. We will be caching this as it takes a long time to run.
+
+```{r}
+old_size <- c(length(twitter), length(news), length(blog))
+
+swear <- readLines("data/swear.txt")
+swear_exp <- paste(swear, collapse = "\\b|\\b")
+
+twitter <- twitter[-grep(swear_exp, twitter, ignore.case = TRUE)]
+news <- news[-grep(swear_exp, news, ignore.case = TRUE)]
+blog <- blog[-grep(swear_exp, blog, ignore.case = TRUE)]
+
+```
+
+```{r}
+new_size <- c(length(twitter), length(news), length(blog))
+removed <-  old_size-new_size
+
+row_names <- c("Twitter", "News", "Blogs")
+data.frame("Old size" = old_size, "New Size" = new_size, "Entries Removed" = removed, "Percent Removed"=paste(round(removed/old_size,4), "%", sep = ""), row.names = row_names)
+```
+
+```{r}
+
+```
+
+Unsurprisingly, Tweets and blogs have a higher content ratio of profanity than news articles. After the sampling and filtering, we are left with almost 20000 entries in our corpus, enough for a lightweight model that still performs fairly accurately.
+
+Next we will read the data into a corpus and apply some more pre-processing, including transforming the words to lower case, removing punctuation, and removing numbers. The decision to not remove stop words was arrived at after considering the problem. Despite their high frequency, they are important in generative language models and sentences without them are weaker sementically but more sound gramatically.
+```{r}
+
+data <- VCorpus(VectorSource(c(twitter,news,blog)))
+data <- tm_map(data, content_transformer(tolower))
+data <- tm_map(data, removePunctuation)
+data <- tm_map(data, removeNumbers)
+
+```
+
+```{r}
+dtm <- DocumentTermMatrix(data)
+findFreqTerms(dtm,1000)
+```
+We can see all the words above that appear over 1000 times each in our sampling of text.
+
+Now let's split our data into bigrams, or groups of two words that appear together. We will remove bigrams that appear in less than 0.2% of our documents. Then we will count and sort the number of bigrams that appear, plotting them below.
+```{r, cache=TRUE}
+UnigramTokenizer <- function(x) 
+    unlist(lapply(ngrams(words(x), 1), paste, collapse = " "), use.names = FALSE)
+BigramTokenizer <- function(x) 
+    unlist(lapply(ngrams(words(x), 2), paste, collapse = " "), use.names = FALSE)
+TrigramTokenizer <- function(x) 
+    unlist(lapply(ngrams(words(x), 3), paste, collapse = " "), use.names = FALSE)
+
+bigrams <- TermDocumentMatrix(data, control = list(tokenize = Unigram))
+bigrams <- TermDocumentMatrix(data, control = list(tokenize = BigramTokenizer))
+trigrams <- TermDocumentMatrix(data, control = list(tokenize = TrigramTokenizer))
+trimmed_bigrams <- removeSparseTerms(bigrams, 0.998)
+most_freq <- sort(rowSums(as.matrix(trimmed_bigrams)), decreasing=TRUE)
+barplot(most_freq[1:10], las=2, cex.names=0.8, main="Most Frequent Bigrams", col="springgreen1")
+```
+
+We can use these bigrams to produce predicted text sequences as we develop our model.
